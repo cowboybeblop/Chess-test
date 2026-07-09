@@ -20,6 +20,27 @@ const CLASS_META = {
 };
 const DRAW_COLORS = ['#c9a24a', '#4e94e0', '#d64545', '#3aab53', '#9b59b6', '#e8e6df'];
 
+// Table d'ancrage ACPL -> Elo estimé, approximation basée sur des données
+// publiques compilant précision et niveau de jeu par tranche de rating.
+// Pas un calcul officiel, juste un ordre de grandeur sur cette partie précise.
+const ELO_ANCHORS = [
+  { acpl: 5, elo: 2800 }, { acpl: 15, elo: 2600 }, { acpl: 30, elo: 2400 },
+  { acpl: 45, elo: 2200 }, { acpl: 65, elo: 2000 }, { acpl: 90, elo: 1800 },
+  { acpl: 120, elo: 1600 }, { acpl: 150, elo: 1400 }, { acpl: 190, elo: 1200 },
+  { acpl: 240, elo: 1000 }, { acpl: 320, elo: 800 }, { acpl: 450, elo: 600 },
+];
+function estimatedEloFromACPL(acpl) {
+  if (acpl <= ELO_ANCHORS[0].acpl) return ELO_ANCHORS[0].elo;
+  for (let i = 0; i < ELO_ANCHORS.length - 1; i++) {
+    const a = ELO_ANCHORS[i], b = ELO_ANCHORS[i + 1];
+    if (acpl >= a.acpl && acpl <= b.acpl) {
+      const t = (acpl - a.acpl) / (b.acpl - a.acpl);
+      return Math.round(a.elo + t * (b.elo - a.elo));
+    }
+  }
+  return ELO_ANCHORS[ELO_ANCHORS.length - 1].elo;
+}
+
 function evalValue(entry) {
   if (!entry) return 0;
   if (entry.mate !== null && entry.mate !== undefined) {
@@ -111,10 +132,18 @@ async function analyzeGame(engine, plies, depth, onProgress) {
     const bestLine = before.lines[1];
     const secondLine = before.lines[2];
     const evalBeforeMover = evalValue(bestLine);
-    const evalAfterOpp = evalValue(after.lines[1]);
+    const afterRaw = after.lines[1] || {};
+    const evalAfterOpp = evalValue(afterRaw);
     const evalAfterMover = -evalAfterOpp;
     let lossCp = evalBeforeMover - evalAfterMover;
     if (lossCp < 0) lossCp = 0;
+
+    // éval du point de vue des Blancs, pour la barre d'avantage (indépendant
+    // du camp qui vient de jouer)
+    const opponentColor = mover === 'w' ? 'b' : 'w';
+    const whiteSign = opponentColor === 'w' ? 1 : -1;
+    const evalMateWhite = afterRaw.mate != null ? whiteSign * afterRaw.mate : null;
+    const evalCpWhite = afterRaw.mate == null ? whiteSign * (afterRaw.cp || 0) : null;
 
     let cls = 'good';
     let playedMove = null;
@@ -145,7 +174,7 @@ async function analyzeGame(engine, plies, depth, onProgress) {
       if (evalBeforeMover >= 300 && evalAfterMover < 150 && !['best', 'great', 'brilliant'].includes(cls)) cls = 'miss';
     }
 
-    records.push({ ply: i, color: mover, san: plies[i].san, cls, lossCp, fen: curFen, playedMove, bestMove });
+    records.push({ ply: i, color: mover, san: plies[i].san, cls, lossCp, fen: curFen, playedMove, bestMove, evalCpWhite, evalMateWhite });
     if (onProgress) onProgress(i, plies.length - 1);
   }
   return records;
@@ -165,6 +194,8 @@ const statusEl = document.getElementById('status');
 const resultsEl = document.getElementById('results');
 const boardGrid = document.getElementById('boardGrid');
 const arrowSvg = document.getElementById('arrowSvg');
+const evalFillEl = document.getElementById('evalFill');
+const evalLabelEl = document.getElementById('evalLabel');
 const summaryEl = document.getElementById('summary');
 const moveListEl = document.getElementById('moveList');
 const engineWarningEl = document.getElementById('engineWarning');
@@ -311,6 +342,7 @@ async function runAnalysis(pgn, username) {
   const totalMoves = plies.length - 1;
   setState('analyzing', `Analyse en cours (0 / ${totalMoves})…`);
   resultsEl.classList.add('hidden');
+  updateEvalBar(null);
 
   const eng = getEngine();
   let records;
@@ -344,13 +376,16 @@ function renderResults(records, headers, username) {
   records.forEach((r) => byColor[r.color].push(r));
   const acpl = (arr) => arr.length ? arr.reduce((s, r) => s + r.lossCp, 0) / arr.length : 0;
   const acplW = acpl(byColor.w), acplB = acpl(byColor.b);
+  const estEloW = estimatedEloFromACPL(acplW), estEloB = estimatedEloFromACPL(acplB);
 
   summaryEl.innerHTML = `
     <div class="side-summary"><b>${headers.White || 'Blancs'}</b>${whiteIsUser ? ' (toi)' : ''}<br>
-      Précision ≈ ${accuracyFromACPL(acplW).toFixed(1)}%<br>ACPL ${acplW.toFixed(0)}</div>
+      Précision ≈ ${accuracyFromACPL(acplW).toFixed(1)}% · ACPL ${acplW.toFixed(0)}<br>
+      Elo officiel : ${headers.WhiteElo || '?'} · Elo estimé sur cette partie ≈ ${estEloW}</div>
     <div class="side-summary"><b>${headers.Black || 'Noirs'}</b>${blackIsUser ? ' (toi)' : ''}<br>
-      Précision ≈ ${accuracyFromACPL(acplB).toFixed(1)}%<br>ACPL ${acplB.toFixed(0)}</div>
-    <div class="acc-note">Approximation inspirée d'une formule publique (ACPL → précision), pas la formule exacte de Chess.com.</div>
+      Précision ≈ ${accuracyFromACPL(acplB).toFixed(1)}% · ACPL ${acplB.toFixed(0)}<br>
+      Elo officiel : ${headers.BlackElo || '?'} · Elo estimé sur cette partie ≈ ${estEloB}</div>
+    <div class="acc-note">Précision et Elo estimé : approximations basées sur la perte moyenne en centipions (formules publiques), pas les calculs exacts de Chess.com. Un seul match est un échantillon bruité.</div>
   `;
 
   moveListEl.innerHTML = '';
@@ -391,6 +426,7 @@ function goToPly(ply) {
   resetManualArrowsSilently();
   renderPosition(currentPlies[currentPly].fen);
   renderAutoArrows();
+  updateEvalBar(currentPly > 0 ? currentRecords[currentPly - 1] : null);
   updateMoveInfo();
   moveListEl.querySelectorAll('.move-cell').forEach((el) => {
     el.classList.toggle('active', parseInt(el.dataset.ply, 10) === currentPly);
@@ -422,6 +458,17 @@ function updateMoveInfo() {
    4. Plateau + flèches (auto : coup joué / meilleur coup —
       manuel : dessin libre façon annotation)
    ========================================================= */
+function updateEvalBar(record) {
+  let cp = 0, mate = null;
+  if (record) { cp = record.evalCpWhite || 0; mate = record.evalMateWhite; }
+  const capped = Math.max(-1000, Math.min(1000, cp));
+  const pct = 50 + (capped / 1000) * 50;
+  evalFillEl.style.height = pct + '%';
+  const whiteAhead = mate != null ? mate > 0 : cp >= 0;
+  evalLabelEl.textContent = mate != null ? ('M' + Math.abs(mate)) : (cp / 100).toFixed(1);
+  evalLabelEl.style.color = whiteAhead ? '#1c1c1c' : '#f7f4ea';
+}
+
 function buildBoardGrid() {
   boardGrid.innerHTML = '';
   boardGrid.appendChild(arrowSvg);
