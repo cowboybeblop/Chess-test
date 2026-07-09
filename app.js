@@ -293,6 +293,7 @@ class LocalEngineAdapter {
   stop() {}
 }
 
+let lastLocalEngineError = null;
 async function checkLocalEngine() {
   try {
     const ctrl = new AbortController();
@@ -303,8 +304,18 @@ async function checkLocalEngine() {
     const t = setTimeout(() => ctrl.abort(), 3000);
     const resp = await fetch(LOCAL_ENGINE_URL + '/health', { signal: ctrl.signal });
     clearTimeout(t);
-    return resp.ok;
+    if (!resp.ok) {
+      lastLocalEngineError = 'Réponse HTTP ' + resp.status + ' ' + resp.statusText;
+      return false;
+    }
+    return true;
   } catch (e) {
+    if (e.name === 'AbortError') {
+      lastLocalEngineError = 'Timeout après 3s (aucune réponse — serveur pas lancé, ou requête bloquée silencieusement par le navigateur)';
+    } else {
+      lastLocalEngineError = (e.name || 'Erreur') + ': ' + (e.message || 'inconnue') +
+        ' — note : par sécurité, les navigateurs ne donnent jamais la vraie raison exacte d\'un blocage réseau/CORS via JS (que ce soit CORS classique, Private/Local Network Access, ou mixed content), ce message générique est tout ce qu\'ils exposent.';
+    }
     return false;
   }
 }
@@ -319,7 +330,12 @@ async function getEngine() {
     if (badgeEl) { badgeEl.textContent = '⚡ Moteur natif local (rapide)'; badgeEl.className = 'engine-badge local'; }
   } else {
     engine = new Engine('stockfish-18-lite-single.js');
-    if (badgeEl) { badgeEl.textContent = '🌐 Moteur WASM navigateur (pas de serveur local détecté)'; badgeEl.className = 'engine-badge wasm'; }
+    if (badgeEl) {
+      badgeEl.textContent = '🌐 Moteur WASM navigateur (serveur local non détecté)';
+      badgeEl.className = 'engine-badge wasm';
+      badgeEl.title = lastLocalEngineError || 'raison inconnue';
+      if (lastLocalEngineError) showDebug('Serveur local non détecté : ' + lastLocalEngineError);
+    }
   }
   return engine;
 }
