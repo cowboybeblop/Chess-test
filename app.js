@@ -454,6 +454,8 @@ btnAnalyzePaste.addEventListener('click', async () => {
 let currentPlies = null;
 let currentRecords = null;
 let currentPly = 0; // 0 = position de départ
+let currentHeaders = null;
+let currentUsername = null;
 
 function withTimeout(promise, ms, message) {
   return Promise.race([
@@ -498,6 +500,8 @@ async function runAnalysis(pgn, username) {
   setState('done', `Terminé — ${headers.White || '?'} vs ${headers.Black || '?'} (${headers.Result || ''})`);
   currentPlies = plies;
   currentRecords = records;
+  currentHeaders = headers;
+  currentUsername = username;
   currentPly = records.length; // se place à la fin par défaut
   try {
     renderResults(records, headers, username);
@@ -785,6 +789,65 @@ function renderAutoArrows() {
 
 buildDrawPalette();
 attachDrawEvents();
+
+function csvEscape(field) {
+  const s = String(field == null ? '' : field);
+  if (/[",\n;]/.test(s)) return '"' + s.replace(/"/g, '""') + '"';
+  return s;
+}
+function csvRow(fields) { return fields.map(csvEscape).join(';') + '\r\n'; }
+
+function exportCSV() {
+  if (!currentRecords || !currentRecords.length) {
+    setState('idle-error', "Aucune partie analysée à exporter pour l'instant.");
+    return;
+  }
+  let csv = '';
+  csv += csvRow(['Coup', 'Type de coup', 'Précision +/-']);
+  for (let i = 0; i < currentRecords.length; i++) {
+    const rec = currentRecords[i];
+    const num = Math.ceil((i + 1) / 2);
+    const moveLabel = (i % 2 === 0 ? num + '. ' : num + '... ') + rec.san;
+    const clsLabel = CLASS_META[rec.cls] ? CLASS_META[rec.cls].label : rec.cls;
+    const evalLabel = formatEval(rec.evalCpWhite, rec.evalMateWhite);
+    csv += csvRow([moveLabel, clsLabel, evalLabel]);
+  }
+
+  // Bilan général, à la fin du fichier
+  const byColor = { w: [], b: [] };
+  currentRecords.forEach((r) => byColor[r.color].push(r));
+  const nonBook = (arr) => arr.filter((r) => r.cls !== 'book');
+  const wReal = nonBook(byColor.w), bReal = nonBook(byColor.b);
+  const avgAccuracy = (arr) => arr.length ? arr.reduce((s, r) => s + moveAccuracy(r.lossCp), 0) / arr.length : 0;
+  const avgEpLoss = (arr) => arr.length ? arr.reduce((s, r) => s + r.lossCp, 0) / arr.length : 0;
+  const accW = avgAccuracy(wReal), accB = avgAccuracy(bReal);
+  const acplW = avgEpLoss(wReal), acplB = avgEpLoss(bReal);
+  const h = currentHeaders || {};
+  const MIN_MOVES_FOR_ELO = 8;
+  const eloText = (arr, acpl) => arr.length >= MIN_MOVES_FOR_ELO ? String(estimatedEloFromACPL(acpl)) : 'non estimable';
+
+  csv += '\r\n';
+  csv += csvRow(['Bilan général', '', '']);
+  csv += csvRow(['', 'Blancs — ' + (h.White || '?'), 'Noirs — ' + (h.Black || '?')]);
+  csv += csvRow(['Précision', accW.toFixed(1) + '%', accB.toFixed(1) + '%']);
+  csv += csvRow(['Points attendus perdus (moy.)', acplW.toFixed(1) + '%', acplB.toFixed(1) + '%']);
+  csv += csvRow(['Elo officiel', h.WhiteElo || '?', h.BlackElo || '?']);
+  csv += csvRow(['Elo estimé sur cette partie', eloText(wReal, acplW), eloText(bReal, acplB)]);
+  csv += csvRow(['Résultat', h.Result || '?', '']);
+  csv += csvRow(['Date', h.Date || h.UTCDate || '?', '']);
+
+  const blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  const safeName = ((h.White || 'Blancs') + '_vs_' + (h.Black || 'Noirs')).replace(/[^\w-]+/g, '_');
+  a.href = url;
+  a.download = 'analyse_' + safeName + '.csv';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+document.getElementById('btnExportCSV').addEventListener('click', exportCSV);
 
 /* =========================================================
    Init moteur
