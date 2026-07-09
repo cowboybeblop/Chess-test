@@ -13,6 +13,7 @@ const CLASS_META = {
   excellent: { label: 'Excellent', symbol: '✓', color: '#6fbf73' },
   good: { label: 'Bon coup', symbol: '●', color: '#8fae4a' },
   book: { label: 'Théorie', symbol: '📖', color: '#a58358' },
+  forced: { label: 'Forcé', symbol: '→', color: '#8b9199' },
   inaccuracy: { label: 'Imprécision', symbol: '?!', color: '#e0b23a' },
   mistake: { label: 'Erreur', symbol: '?', color: '#e0813a' },
   blunder: { label: 'Gaffe', symbol: '??', color: '#d64545' },
@@ -94,6 +95,14 @@ function isLikelySacrifice(prevState, newBoard, move, moverColor) {
   if (!isSquareAttacked(newBoard, move.to.x, move.to.y, enemy)) return false;
   return (risked - gained) >= 2;
 }
+function countLegalMoves(state, color) {
+  let count = 0;
+  for (let y = 0; y < 8; y++) for (let x = 0; x < 8; x++) {
+    const p = state.board[y][x];
+    if (p && p.color === color) count += legalMoves(state, x, y).length;
+  }
+  return count;
+}
 // Précision par coup à partir des points attendus perdus (méthode Lichess,
 // appliquée ici sur l'échelle 0-100 des points attendus perdus x100).
 function moveAccuracy(epLossPct) {
@@ -150,6 +159,7 @@ async function fetchRecentGames(username, maxGames) {
    coup du moteur (pour les flèches de la revue en direct)
    ========================================================= */
 async function analyzeGame(engine, plies, depth, onProgress) {
+  if (engine.newGame) await engine.newGame();
   const records = [];
   for (let i = 1; i < plies.length; i++) {
     const prevFen = plies[i - 1].fen;
@@ -194,7 +204,11 @@ async function analyzeGame(engine, plies, depth, onProgress) {
       const nextForSac = applyMove(prevState, parsed.move, parsed.promo);
       const sac = isLikelySacrifice(prevState, nextForSac.board, parsed.move, mover);
       const isCheckmate = plies[i].san.endsWith('#');
+      const isForced = countLegalMoves(prevState, mover) === 1;
 
+      if (isForced) {
+        cls = 'forced';
+      } else {
       // Tableau officiel Chess.com "Classification V2" (points attendus
       // perdus, 9 février 2026) : Meilleur 0 · Excellent 0-0.02 ·
       // Bon 0.02-0.05 · Imprécision 0.05-0.10 · Erreur 0.10-0.20 · Gaffe 0.20+
@@ -239,6 +253,7 @@ async function analyzeGame(engine, plies, depth, onProgress) {
         if (rawSwing >= 900) cls = worsenBy(cls, 3);
         else if (rawSwing >= 400) cls = worsenBy(cls, 2);
         else if (rawSwing >= 150) cls = worsenBy(cls, 1);
+      }
       }
     }
 
@@ -289,6 +304,9 @@ class LocalEngineAdapter {
     });
     if (!resp.ok) throw new Error('Serveur local : erreur ' + resp.status);
     return resp.json();
+  }
+  async newGame() {
+    try { await fetch(LOCAL_ENGINE_URL + '/newgame', { method: 'POST' }); } catch (e) { /* tant pis, pas bloquant */ }
   }
   stop() {}
 }
@@ -543,10 +561,10 @@ function renderResults(records, headers, username) {
 
   summaryEl.innerHTML = `
     <div class="side-summary"><b>${headers.White || 'Blancs'}</b>${whiteIsUser ? ' (toi)' : ''}<br>
-      Précision ≈ ${accW.toFixed(1)}% · pts. attendus perdus ${acplW.toFixed(1)}%<br>
+      Précision ≈ ${accW.toFixed(2)}% · pts. attendus perdus ${acplW.toFixed(2)}%<br>
       Elo officiel : ${headers.WhiteElo || '?'} · Elo estimé sur cette partie ${eloTextFor(wReal, acplW)}</div>
     <div class="side-summary"><b>${headers.Black || 'Noirs'}</b>${blackIsUser ? ' (toi)' : ''}<br>
-      Précision ≈ ${accB.toFixed(1)}% · pts. attendus perdus ${acplB.toFixed(1)}%<br>
+      Précision ≈ ${accB.toFixed(2)}% · pts. attendus perdus ${acplB.toFixed(2)}%<br>
       Elo officiel : ${headers.BlackElo || '?'} · Elo estimé sur cette partie ${eloTextFor(bReal, acplB)}</div>
     <div class="acc-note">Classification calée sur le tableau officiel Chess.com "Classification V2" (points attendus, 9 fév. 2026) — sauf calibration par rating, propriétaire et non reproduite ici. Les coups "Théorie" ne comptent pas dans la précision/Elo estimé (perte quasi nulle par construction, ça fausserait la moyenne). Précision et Elo estimé restent des approximations, peu fiables sur une partie courte.</div>
   `;
@@ -829,8 +847,8 @@ function exportCSV() {
   csv += '\r\n';
   csv += csvRow(['Bilan général', '', '']);
   csv += csvRow(['', 'Blancs — ' + (h.White || '?'), 'Noirs — ' + (h.Black || '?')]);
-  csv += csvRow(['Précision', accW.toFixed(1) + '%', accB.toFixed(1) + '%']);
-  csv += csvRow(['Points attendus perdus (moy.)', acplW.toFixed(1) + '%', acplB.toFixed(1) + '%']);
+  csv += csvRow(['Précision', accW.toFixed(2) + '%', accB.toFixed(2) + '%']);
+  csv += csvRow(['Points attendus perdus (moy.)', acplW.toFixed(2) + '%', acplB.toFixed(2) + '%']);
   csv += csvRow(['Elo officiel', h.WhiteElo || '?', h.BlackElo || '?']);
   csv += csvRow(['Elo estimé sur cette partie', eloText(wReal, acplW), eloText(bReal, acplB)]);
   csv += csvRow(['Résultat', h.Result || '?', '']);
