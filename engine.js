@@ -82,6 +82,15 @@ class Engine {
   _pump() {
     if (this.busy || this.queue.length === 0) return;
     const job = this.queue.shift();
+    if (job.isNewGame) {
+      // Pas de réponse à attendre pour ucinewgame — on l'envoie seulement
+      // quand le moteur est réellement libre (garanti par la file
+      // d'attente), puis on enchaîne direct sur le job suivant.
+      this.send('ucinewgame');
+      job.resolve();
+      this._pump();
+      return;
+    }
     this.busy = true;
     this._current = { lines: {}, depthReached: 0, resolve: job.resolve, onProgress: job.onProgress };
     this.send('setoption name MultiPV value ' + (job.multipv || 1));
@@ -121,8 +130,14 @@ class Engine {
   // laissées par les positions précédentes peuvent légèrement influencer
   // l'éval/le meilleur coup calculés sur une position pourtant identique
   // d'une fois à l'autre — source de non-déterminisme entre deux analyses.
+  // Passe par la même file d'attente que analyze() : garantit que la
+  // commande n'est envoyée que quand le moteur est vraiment libre, jamais
+  // en plein milieu d'une recherche en cours.
   newGame() {
-    this.send('ucinewgame');
+    return this.readyPromise.then(() => new Promise((resolve) => {
+      this.queue.push({ isNewGame: true, resolve });
+      this._pump();
+    }));
   }
 
   stop() {
