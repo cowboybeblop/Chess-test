@@ -1,0 +1,340 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
+<title>Analyse Lidraughts — Dames</title>
+<style>
+  :root{
+    --bg:#10141a; --panel:#1a212a; --panel-2:#212a35; --line:#2b3542;
+    --gold:#d2a44c; --gold-dim:#8f7638; --text:#e9e6dd; --text-dim:#8d95a0;
+    --teal:#2fb3ab; --win:#63b56b; --loss:#d97b52;
+    --mono:'Courier New', ui-monospace, Consolas, monospace;
+    --serif: Georgia, 'Times New Roman', serif;
+  }
+  *{box-sizing:border-box; -webkit-tap-highlight-color:transparent;}
+  html,body{ margin:0; padding:0; background:var(--bg); color:var(--text); font-family:var(--mono); }
+  .app{ max-width:560px; margin:0 auto; padding:16px 14px 60px; }
+  header{ display:flex; align-items:baseline; justify-content:space-between; margin:4px 2px 14px; }
+  header h1{ font-family:var(--serif); font-weight:400; font-size:21px; margin:0; }
+  header h1 span{ color:var(--gold); font-style:italic; }
+  header .step{ font-size:10px; color:var(--text-dim); letter-spacing:.12em; text-transform:uppercase; }
+  .card{ background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:14px; margin-bottom:12px; }
+  .card h2{ margin:0 0 10px; font-size:10.5px; letter-spacing:.15em; text-transform:uppercase; color:var(--gold-dim); }
+  .row{ display:flex; gap:8px; flex-wrap:wrap; }
+  input[type="text"]{
+    flex:1; min-width:140px; background:var(--panel-2); border:1px solid var(--line); color:var(--text);
+    padding:12px; border-radius:6px; font-family:var(--mono); font-size:15px;
+  }
+  input[type="text"]:focus{ outline:none; border-color:var(--gold); }
+  select{ background:var(--panel-2); border:1px solid var(--line); color:var(--text); padding:10px; border-radius:6px; font-family:var(--mono); font-size:13px; }
+  button{ background:var(--panel-2); color:var(--text); border:1px solid var(--line); border-radius:6px; padding:12px 16px; cursor:pointer; font-family:var(--mono); font-size:14px; white-space:nowrap; -webkit-appearance:none; }
+  button:active{ border-color:var(--gold); color:var(--gold); }
+  button.primary{ background:#2a2416; border-color:var(--gold-dim); color:var(--gold); flex:1; }
+  button:disabled{ opacity:.55; cursor:not-allowed; }
+  textarea{ width:100%; height:72px; background:var(--panel-2); border:1px solid var(--line); color:var(--text); border-radius:6px; padding:10px; font-family:var(--mono); font-size:13px; resize:vertical; }
+  .status{ font-size:12.5px; color:var(--text-dim); margin-top:10px; line-height:1.5; min-height:16px; display:flex; gap:6px; }
+  .status.loading{ color:var(--gold); }
+  .status.success{ color:var(--win); }
+  .status.error{ color:var(--loss); }
+  .status-icon.spin{ display:inline-block; animation:spin 1.1s linear infinite; }
+  @keyframes spin{ to{ transform:rotate(360deg); } }
+  .hidden{ display:none !important; }
+
+  .games-list{ max-height:340px; overflow-y:auto; display:flex; flex-direction:column; gap:6px; }
+  .game-item{ background:var(--panel-2); border:1px solid var(--line); border-radius:6px; padding:10px 12px; cursor:pointer; }
+  .game-item:active{ border-color:var(--gold); }
+  .game-item-main{ display:flex; align-items:center; gap:8px; font-size:13.5px; }
+  .game-color-dot{ width:9px; height:9px; border-radius:50%; flex-shrink:0; }
+  .game-color-dot.w{ background:#f7f4ea; border:1px solid #555; }
+  .game-color-dot.b{ background:#1c1c1c; border:1px solid #666; }
+  .game-opponent{ flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .outcome-badge{ font-size:10.5px; padding:2px 8px; border-radius:10px; flex-shrink:0; }
+  .outcome-badge.win{ background:#1e3a24; color:var(--win); }
+  .outcome-badge.loss{ background:#3a231a; color:var(--loss); }
+  .outcome-badge.draw{ background:#2a2932; color:var(--text-dim); }
+  .game-item-sub{ font-size:10.5px; color:var(--text-dim); margin-top:4px; }
+  .variant-chip{ font-size:9.5px; border:1px solid var(--line); border-radius:8px; padding:1px 7px; color:var(--teal); margin-left:4px; }
+
+  .g-title{ font-family:var(--serif); font-style:italic; font-size:15px; text-align:center; margin-bottom:4px; }
+  .g-sub{ font-size:11px; color:var(--text-dim); text-align:center; margin-bottom:12px; }
+  .moves-grid{ max-height:280px; overflow-y:auto; font-size:13.5px; }
+  .move-row{ display:flex; gap:6px; padding:4px 0; border-bottom:1px solid #232a31; }
+  .move-num{ color:var(--text-dim); width:32px; flex-shrink:0; }
+  .move-cell{ flex:1; padding:2px 4px; }
+  .move-cell.capture{ color:var(--gold); }
+  .links-row{ display:flex; gap:8px; margin-top:12px; }
+  .links-row a{ flex:1; text-align:center; text-decoration:none; }
+  .note{ font-size:11px; color:var(--text-dim); line-height:1.6; margin-top:10px; }
+  details summary{ cursor:pointer; color:var(--gold-dim); font-size:11.5px; letter-spacing:.1em; text-transform:uppercase; }
+</style>
+</head>
+<body>
+<div id="debugBanner" style="display:none; position:fixed; bottom:0; left:0; right:0; background:#3a1616; color:#ffd7b8; padding:10px 12px; font-family:'Courier New',monospace; font-size:11.5px; line-height:1.6; z-index:9999; max-height:45vh; overflow-y:auto; white-space:pre-wrap; border-top:2px solid #d97b52;"></div>
+<script>
+  function showDebug(msg) {
+    var el = document.getElementById('debugBanner');
+    el.style.display = 'block';
+    el.textContent += (el.textContent ? '\n———\n' : '⚠ Erreur détectée :\n') + msg;
+  }
+  window.addEventListener('error', function (e) { showDebug((e.message || 'Erreur inconnue') + (e.filename ? '\n  ' + e.filename.split('/').pop() + ':' + e.lineno : '')); });
+  window.addEventListener('unhandledrejection', function (e) { showDebug('Erreur async: ' + (e.reason && e.reason.message ? e.reason.message : String(e.reason))); });
+</script>
+
+<div class="app">
+  <header>
+    <h1>Analyse <span>Lidraughts</span></h1>
+    <span class="step">Dames · étape 1</span>
+  </header>
+
+  <div class="card">
+    <h2>Rechercher un joueur</h2>
+    <div class="row">
+      <input type="text" id="usernameInput" placeholder="pseudo lidraughts" autocapitalize="off" autocorrect="off">
+      <button id="btnSearch">Chercher</button>
+    </div>
+    <div class="row" style="margin-top:8px;">
+      <select id="variantFilter">
+        <option value="">Toutes les variantes</option>
+        <option value="standard" selected>Internationales 10×10</option>
+        <option value="frisian">Frisonnes</option>
+        <option value="breakthrough">Breakthrough</option>
+        <option value="russian">Russes 8×8</option>
+        <option value="brazilian">Brésiliennes 8×8</option>
+        <option value="antidraughts">Qui-perd-gagne</option>
+      </select>
+    </div>
+    <div class="status" id="status"></div>
+  </div>
+
+  <div class="card hidden" id="gamesListCard">
+    <h2>Parties récentes</h2>
+    <div class="games-list" id="gamesList"></div>
+  </div>
+
+  <div class="card">
+    <details>
+      <summary>Coller un PDN à la place</summary>
+      <textarea id="pdnTextarea" placeholder="[White ...] 1. 32-28 18-23 …" style="margin-top:10px;"></textarea>
+      <div class="row" style="margin-top:8px;">
+        <button class="primary" id="btnLoadPdn">Charger ce PDN</button>
+      </div>
+    </details>
+  </div>
+
+  <div class="card hidden" id="gameCard">
+    <div class="g-title" id="gTitle"></div>
+    <div class="g-sub" id="gSub"></div>
+    <div class="moves-grid" id="movesGrid"></div>
+    <div class="links-row">
+      <button class="primary" id="btnCopyPdn">📋 Copier le PDN</button>
+      <a id="lidraughtsLink" target="_blank" rel="noopener"><button style="width:100%">Voir sur Lidraughts ↗</button></a>
+    </div>
+    <div class="note">Les prises sont en <span style="color:var(--gold)">doré</span> (notation Manoury : <b>32-28</b> déplacement · <b>23x34</b> prise). L'analyse Scan arrive à l'étape 2.</div>
+  </div>
+</div>
+
+<script>
+/* =========================================================
+   Étape 1 du projet dames : récupération des parties.
+   API Lidraughts (fork de Lichess, spec RoepStoep/lidraughts-api) :
+   - GET /api/user/{u}                  -> le joueur existe ?
+   - GET /api/games/user/{u}  (NDJSON)  -> parties, coups inclus
+   Réponse par ligne : { id, variant, speed, createdAt, status,
+     players:{white:{user:{name},rating}, black:{...}}, winner, moves }
+   ========================================================= */
+const API = 'https://lidraughts.org';
+const $ = (id) => document.getElementById(id);
+const statusEl = $('status');
+
+const STATE_META = {
+  loading: { icon: '◌', cls: 'loading' }, success: { icon: '●', cls: 'success' },
+  error: { icon: '✕', cls: 'error' },
+};
+function setState(state, text) {
+  const m = STATE_META[state] || { icon: '', cls: '' };
+  statusEl.innerHTML = (m.icon ? `<span class="status-icon${m.cls === 'loading' ? ' spin' : ''}">${m.icon}</span> ` : '') + text;
+  statusEl.className = 'status' + (m.cls ? ' ' + m.cls : '');
+}
+
+const VARIANT_LABEL = {
+  standard: '10×10', frisian: 'Frisonnes', frysk: 'Frysk!', antidraughts: 'Qui-perd-gagne',
+  breakthrough: 'Breakthrough', russian: 'Russes', brazilian: 'Brésiliennes',
+  fromPosition: 'Position perso',
+};
+
+const saved = localStorage.getItem('lidraughtsUsername');
+if (saved) $('usernameInput').value = saved;
+
+$('btnSearch').addEventListener('click', searchPlayer);
+$('usernameInput').addEventListener('keydown', (e) => { if (e.key === 'Enter') searchPlayer(); });
+
+async function searchPlayer() {
+  const username = $('usernameInput').value.trim();
+  if (!username) { setState('error', 'Entre ton pseudo lidraughts.'); return; }
+  localStorage.setItem('lidraughtsUsername', username);
+  $('btnSearch').disabled = true;
+  $('gamesListCard').classList.add('hidden');
+  $('gameCard').classList.add('hidden');
+  setState('loading', `Recherche de « ${username} »…`);
+  try {
+    // 1) le joueur existe ?
+    const uRes = await fetch(`${API}/api/user/${encodeURIComponent(username)}`);
+    if (uRes.status === 404) { setState('error', `Joueur « ${username} » introuvable sur lidraughts.org.`); return; }
+    if (!uRes.ok) throw new Error('HTTP ' + uRes.status);
+    // 2) ses parties (NDJSON en flux)
+    setState('loading', 'Récupération des parties…');
+    const variant = $('variantFilter').value;
+    const params = new URLSearchParams({ max: '20', moves: 'true' });
+    if (variant) params.set('perfType', variant === 'standard' ? 'bullet,blitz,rapid,classical,ultraBullet,correspondence' : variant);
+    const gRes = await fetch(`${API}/api/games/user/${encodeURIComponent(username)}?${params}`, {
+      headers: { Accept: 'application/x-ndjson' },
+    });
+    if (!gRes.ok) throw new Error('HTTP ' + gRes.status);
+    const text = await gRes.text();
+    const games = text.split('\n').filter(Boolean).map((l) => JSON.parse(l));
+    if (!games.length) { setState('error', 'Aucune partie trouvée pour ce filtre.'); return; }
+    setState('success', `${games.length} parties — choisis-en une.`);
+    renderGamesList(games, username);
+  } catch (e) {
+    if (e instanceof TypeError) {
+      // échec réseau/CORS : le fallback PDN reste utilisable
+      setState('error', 'Connexion à lidraughts.org impossible (réseau ou CORS) — utilise « Coller un PDN ».');
+    } else {
+      setState('error', 'Erreur : ' + e.message);
+    }
+  } finally {
+    $('btnSearch').disabled = false;
+  }
+}
+
+function renderGamesList(games, username) {
+  const listEl = $('gamesList');
+  $('gamesListCard').classList.remove('hidden');
+  listEl.innerHTML = '';
+  const uname = username.toLowerCase();
+  games.forEach((g) => {
+    const pw = g.players && g.players.white || {}, pb = g.players && g.players.black || {};
+    const nameOf = (p) => (p.user && p.user.name) || (p.aiLevel ? 'Scan niv.' + p.aiLevel : 'Anonyme');
+    const isWhite = (nameOf(pw) || '').toLowerCase() === uname;
+    const me = isWhite ? pw : pb, opp = isWhite ? pb : pw;
+    let outcome = 'Nulle', ocls = 'draw';
+    if (g.winner === 'white') { outcome = isWhite ? 'Victoire' : 'Défaite'; ocls = isWhite ? 'win' : 'loss'; }
+    else if (g.winner === 'black') { outcome = isWhite ? 'Défaite' : 'Victoire'; ocls = isWhite ? 'loss' : 'win'; }
+    else if (g.status && !['draw', 'stalemate'].includes(g.status)) { outcome = g.status === 'started' ? 'En cours' : 'Nulle'; }
+    const date = g.createdAt ? new Date(g.createdAt).toLocaleDateString('fr-FR', { day: '2-digit', month: 'short' }) : '';
+    const nMoves = g.moves ? Math.ceil(g.moves.split(' ').length / 2) : 0;
+    const item = document.createElement('div');
+    item.className = 'game-item';
+    item.innerHTML = `
+      <div class="game-item-main">
+        <span class="game-color-dot ${isWhite ? 'w' : 'b'}"></span>
+        <span class="game-opponent">vs ${nameOf(opp)} (${opp.rating || '?'})</span>
+        <span class="outcome-badge ${ocls}">${outcome}</span>
+      </div>
+      <div class="game-item-sub">${date} · ${g.speed || ''} · ${nMoves} coups
+        ${g.variant && g.variant !== 'standard' ? `<span class="variant-chip">${VARIANT_LABEL[g.variant] || g.variant}</span>` : ''}</div>`;
+    item.addEventListener('click', () => showGame(g, username));
+    listEl.appendChild(item);
+  });
+}
+
+/* ---- Fiche partie + reconstruction PDN ---- */
+let currentPdn = '';
+function resultStr(g) {
+  if (g.winner === 'white') return '2-0';
+  if (g.winner === 'black') return '0-2';
+  if (['draw', 'stalemate'].includes(g.status)) return '1-1';
+  return '*';
+}
+function buildPdn(g) {
+  const pw = g.players.white, pb = g.players.black;
+  const nameOf = (p) => (p.user && p.user.name) || (p.aiLevel ? 'Scan level ' + p.aiLevel : 'Anonymous');
+  const d = new Date(g.createdAt || Date.now());
+  const iso = d.toISOString();
+  const tags = [
+    ['Event', (g.rated ? 'Rated ' : 'Casual ') + (g.speed || 'game')],
+    ['Site', `https://lidraughts.org/${g.id}`],
+    ['Date', iso.slice(0, 10).replace(/-/g, '.')],
+    ['White', nameOf(pw)], ['Black', nameOf(pb)],
+    ['Result', resultStr(g)],
+    ['WhiteElo', pw.rating || '?'], ['BlackElo', pb.rating || '?'],
+    ['GameType', '20'], // 20 = dames internationales 10x10 dans le standard PDN
+    ['Variant', g.variant || 'standard'],
+  ];
+  const movesArr = (g.moves || '').split(' ').filter(Boolean);
+  let body = '';
+  for (let i = 0; i < movesArr.length; i += 2) {
+    body += (i / 2 + 1) + '. ' + movesArr[i] + (movesArr[i + 1] ? ' ' + movesArr[i + 1] : '') + ' ';
+  }
+  return tags.map(([k, v]) => `[${k} "${v}"]`).join('\n') + '\n\n' + body.trim() + ' ' + resultStr(g);
+}
+function showGame(g, username) {
+  const pw = g.players.white, pb = g.players.black;
+  const nameOf = (p) => (p.user && p.user.name) || (p.aiLevel ? 'Scan niv.' + p.aiLevel : 'Anonyme');
+  currentPdn = buildPdn(g);
+  renderGameCard({
+    white: `${nameOf(pw)} (${pw.rating || '?'})`,
+    black: `${nameOf(pb)} (${pb.rating || '?'})`,
+    sub: `${resultStr(g)} · ${g.speed || ''}${g.variant && g.variant !== 'standard' ? ' · ' + (VARIANT_LABEL[g.variant] || g.variant) : ''} · ${new Date(g.createdAt).toLocaleDateString('fr-FR')}`,
+    moves: (g.moves || '').split(' ').filter(Boolean),
+    link: `https://lidraughts.org/${g.id}`,
+  });
+}
+function renderGameCard(info) {
+  $('gameCard').classList.remove('hidden');
+  $('gTitle').textContent = info.white + '  —  ' + info.black;
+  $('gSub').textContent = info.sub;
+  const grid = $('movesGrid');
+  grid.innerHTML = '';
+  for (let i = 0; i < info.moves.length; i += 2) {
+    const row = document.createElement('div');
+    row.className = 'move-row';
+    const mk = (m) => m ? `<span class="move-cell${m.includes('x') ? ' capture' : ''}">${m}</span>` : '<span class="move-cell"></span>';
+    row.innerHTML = `<span class="move-num">${i / 2 + 1}.</span>` + mk(info.moves[i]) + mk(info.moves[i + 1]);
+    grid.appendChild(row);
+  }
+  const link = $('lidraughtsLink');
+  if (info.link) { link.href = info.link; link.style.display = ''; }
+  else link.style.display = 'none';
+  $('gameCard').scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+$('btnCopyPdn').addEventListener('click', async () => {
+  try {
+    await navigator.clipboard.writeText(currentPdn);
+    setState('success', 'PDN copié dans le presse-papier.');
+  } catch (e) {
+    // fallback vieux navigateurs
+    const ta = document.createElement('textarea');
+    ta.value = currentPdn; document.body.appendChild(ta); ta.select();
+    document.execCommand('copy'); ta.remove();
+    setState('success', 'PDN copié.');
+  }
+});
+
+/* ---- Fallback : PDN collé ---- */
+$('btnLoadPdn').addEventListener('click', () => {
+  const pdn = $('pdnTextarea').value.trim();
+  if (!pdn) { setState('error', 'Colle un PDN d\'abord.'); return; }
+  try {
+    const tags = {};
+    for (const m of pdn.matchAll(/\[(\w+)\s+"([^"]*)"\]/g)) tags[m[1]] = m[2];
+    const body = pdn.replace(/\[[^\]]*\]/g, ' ').replace(/\{[^}]*\}/g, ' ');
+    const moves = body.split(/\s+/).filter((t) => /^\d+[x-]\d+(x\d+)*$/.test(t));
+    if (!moves.length) throw new Error('aucun coup Manoury trouvé (format attendu : 32-28, 23x34)');
+    currentPdn = pdn;
+    renderGameCard({
+      white: (tags.White || 'Blancs') + (tags.WhiteElo ? ` (${tags.WhiteElo})` : ''),
+      black: (tags.Black || 'Noirs') + (tags.BlackElo ? ` (${tags.BlackElo})` : ''),
+      sub: (tags.Result || '') + (tags.Date ? ' · ' + tags.Date : ''),
+      moves,
+      link: tags.Site && tags.Site.startsWith('https://lidraughts.org') ? tags.Site : null,
+    });
+    setState('success', 'PDN chargé (' + moves.length + ' demi-coups).');
+  } catch (e) {
+    setState('error', 'PDN illisible : ' + e.message);
+  }
+});
+</script>
+</body>
+</html>
