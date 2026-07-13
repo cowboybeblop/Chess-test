@@ -50,7 +50,7 @@ jobs:
 
       - name: Analyser (pipeline de l'outil, Stockfish natif)
         env:
-          STOCKFISH_PATH: /usr/bin/stockfish
+          STOCKFISH_PATH: /usr/games/stockfish
         run: |
           mkdir -p dataset
           node factory/factory.mjs slice.pgn "dataset/part-${{ github.run_id }}.jsonl" \
