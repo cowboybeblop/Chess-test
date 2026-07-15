@@ -1,0 +1,158 @@
+name: LLL — Usine à données (plat en Elo, durci)
+# Déclenchable depuis l'app GitHub mobile : onglet Actions -> Run workflow.
+# Extrait un dataset PLAT en Elo (bande = Elo MOYEN des 2 joueurs) sur un ou
+# plusieurs mois de la base Lichess, puis analyse (Stockfish natif) et commit
+# du JSONL dans dataset/, par tranches de 150 (sécurité anti-timeout).
+#
+# DURCISSEMENT vs version précédente :
+#  - rapport clair en fin d'extraction : parties SCANNÉES, gardées, bandes
+#    pleines/incomplètes, et RAISON de l'arrêt (ALL_FULL / MAX_SCAN / STREAM_END) ;
+#  - erreurs curl/zstd non masquées (--fail --retry, statut par mois) ;
+#  - ROTATION DE MOIS : `months` accepte plusieurs mois (séparés par espaces),
+#    parcourus dans UN seul awk -> les compteurs de bande persistent, un run
+#    remplit davantage. Change la liste pour du neuf au run suivant.
+
+on:
+  workflow_dispatch:
+    inputs:
+      elo_lo:
+        description: "Elo moyen minimum (bas de la plage)"
+        default: "600"
+      elo_hi:
+        description: "Elo moyen maximum (haut de la plage)"
+        default: "2400"
+      bands:
+        description: "Nombre de bandes égales dans la plage"
+        default: "100"
+      per_band:
+        description: "Parties gardées par bande"
+        default: "10"
+      max_gap:
+        description: "Écart d'Elo max entre les 2 joueurs (0 = pas de limite)"
+        default: "400"
+      max_scan:
+        description: "Parties examinées max, tous mois confondus (garde-fou)"
+        default: "3000000"
+      months:
+        description: "Mois Lichess (AAAA-MM), séparés par des espaces"
+        default: "2026-05 2026-04 2026-03"
+      depth:
+        description: "Profondeur Stockfish"
+        default: "14"
+
+permissions:
+  contents: write
+
+jobs:
+  factory:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350   # marge sous la limite de 6 h
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Installer Stockfish + zstd
+        run: sudo apt-get update -q && sudo apt-get install -y -q stockfish zstd
+
+      - name: Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Extraire un dataset plat en Elo (une passe, multi-mois, avec rapport)
+        run: |
+          ELO_LO=${{ github.event.inputs.elo_lo }}
+          ELO_HI=${{ github.event.inputs.elo_hi }}
+          BANDS=${{ github.event.inputs.bands }}
+          PER=${{ github.event.inputs.per_band }}
+          MAXGAP=${{ github.event.inputs.max_gap }}
+          MAXSCAN=${{ github.event.inputs.max_scan }}
+          MONTHS="${{ github.event.inputs.months }}"
+          SKIP=$(( RANDOM % 5000 ))
+          WIDTH=$(( (ELO_HI - ELO_LO) / BANDS ))
+          echo "Plage [$ELO_LO, $ELO_HI] en $BANDS bandes de ~${WIDTH} Elo, $PER parties/bande."
+          echo "Écart max : $MAXGAP · scan max : $MAXSCAN · skip : $SKIP · mois : $MONTHS"
+
+          set +e   # on gère nous-mêmes les codes de sortie (SIGPIPE attendu à l'arrêt anticipé)
+          # Les mois sont concaténés dans UN seul awk : count[] persiste d'un mois à l'autre.
+          {
+            for M in $MONTHS; do
+              echo ">>> flux mois $M" >&2
+              curl -sS --fail --retry 3 \
+                "https://database.lichess.org/standard/lichess_db_standard_rated_${M}.pgn.zst" \
+                | zstdcat 2>/dev/null
+              echo ">>> fin mois $M (curl:${PIPESTATUS[0]} zstd:${PIPESTATUS[1]})" >&2
+            done
+          } | awk -v lo="$ELO_LO" -v hi="$ELO_HI" -v nb="$BANDS" -v per="$PER" \
+                  -v gap="$MAXGAP" -v skip="$SKIP" -v maxscan="$MAXSCAN" '
+                BEGIN { width = (hi - lo) / nb; full = 0; scanned = 0; kept = 0 }
+                /^\[Event / {
+                  if (buf != "") keep()
+                  if (full >= nb || scanned >= maxscan) exit
+                  buf = ""; w = 0; b = 0
+                }
+                /^\[WhiteElo "/ { v = $2; gsub(/[^0-9]/, "", v); w = v + 0 }
+                /^\[BlackElo "/ { v = $2; gsub(/[^0-9]/, "", v); b = v + 0 }
+                { buf = buf $0 "\n" }
+                END {
+                  if (buf != "" && full < nb && scanned < maxscan) keep()
+                  reason = (full >= nb) ? "ALL_FULL" : (scanned >= maxscan) ? "MAX_SCAN" : "STREAM_END"
+                  short = 0
+                  for (k = 0; k < nb; k++) if (count[k] < per) short++
+                  printf("RAPPORT scannees=%d gardees=%d pleines=%d/%d incompletes=%d raison=%s\n",
+                         scanned, kept, full, nb, short, reason) > "/dev/stderr"
+                }
+                function keep(   avg, idx, d) {
+                  scanned++
+                  if (scanned <= skip) return
+                  if (w <= 0 || b <= 0) return
+                  d = (w > b) ? w - b : b - w
+                  if (gap + 0 > 0 && d > gap) return
+                  avg = (w + b) / 2
+                  if (avg < lo || avg >= hi) return
+                  idx = int((avg - lo) / width)
+                  if (idx < 0 || idx >= nb) return
+                  if (count[idx] >= per) return
+                  printf "%s", buf
+                  count[idx]++; kept++
+                  if (count[idx] == per) full++
+                }
+              ' > slice.pgn
+          echo "Codes du pipeline final (subshell|awk) : ${PIPESTATUS[*]}"
+
+          NGAMES=$(grep -c "^\[Event " slice.pgn 2>/dev/null || echo 0)
+          echo "slice.pgn : $NGAMES parties, $(du -h slice.pgn 2>/dev/null | cut -f1)"
+          if [ "$NGAMES" -eq 0 ]; then
+            echo "::error::Aucune partie extraite — regarde les statuts curl/zstd et la ligne RAPPORT ci-dessus"
+            exit 1
+          fi
+
+      - name: Analyser (par tranches, commit après chaque tranche)
+        timeout-minutes: 330   # coupe AVANT le timeout du job -> l'étape suivante s'exécute
+        env:
+          STOCKFISH_PATH: /usr/games/stockfish
+        run: |
+          mkdir -p dataset chunks
+          git config user.name "lll-factory"
+          git config user.email "actions@github.com"
+          # découper slice.pgn en tranches de 150 parties
+          awk '/^\[Event / { g++ } { print > sprintf("chunks/c%04d.pgn", int((g-1)/150)) }' slice.pgn
+          i=0
+          for chunk in chunks/c*.pgn; do
+            i=$((i+1))
+            echo "=== Tranche $i : $chunk ==="
+            node factory/factory.mjs "$chunk" "dataset/part-${{ github.run_id }}-$i.jsonl" \
+              ${{ github.event.inputs.depth }} 99999
+            # commit immédiat : la tranche est EN SÉCURITÉ dans le repo
+            git add dataset/
+            git commit -m "dataset: tranche $i du run ${{ github.run_id }} (+$(wc -l < dataset/part-${{ github.run_id }}-$i.jsonl) ex.)" || true
+            git pull --rebase && git push || (sleep 5 && git pull --rebase && git push)
+          done
+
+      - name: Filet de sécurité — committer ce qui reste
+        if: always()   # s'exécute même après timeout/annulation de l'analyse
+        run: |
+          git config user.name "lll-factory"
+          git config user.email "actions@github.com"
+          git add dataset/ || true
+          git commit -m "dataset: sauvetage fin de run ${{ github.run_id }}" || echo "rien à sauver"
+          git pull --rebase && git push || true
