@@ -1,0 +1,140 @@
+name: LLL — Usine à données (échantillonnage plat en Elo)
+# Déclenchable depuis l'app GitHub mobile : onglet Actions -> Run workflow.
+# Extrait un dataset PLAT en Elo : la plage [elo_lo, elo_hi] est découpée en
+# `bands` tranches égales ; on garde `per_band` parties par tranche, la tranche
+# étant définie par l'Elo MOYEN des deux joueurs. Puis analyse Stockfish natif
+# et commit du JSONL dans dataset/, par tranches de 150 (sécurité anti-timeout).
+
+on:
+  workflow_dispatch:
+    inputs:
+      elo_lo:
+        description: "Elo moyen minimum (bas de la plage)"
+        default: "600"
+      elo_hi:
+        description: "Elo moyen maximum (haut de la plage)"
+        default: "2400"
+      bands:
+        description: "Nombre de bandes égales dans la plage"
+        default: "100"
+      per_band:
+        description: "Parties gardées par bande"
+        default: "10"
+      max_gap:
+        description: "Écart d'Elo max entre les 2 joueurs (0 = pas de limite)"
+        default: "400"
+      max_scan:
+        description: "Parties examinées max (garde-fou anti-flux infini)"
+        default: "3000000"
+      depth:
+        description: "Profondeur Stockfish"
+        default: "14"
+      month:
+        description: "Mois de la base Lichess (AAAA-MM)"
+        default: "2026-05"
+
+permissions:
+  contents: write
+
+jobs:
+  factory:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350   # marge sous la limite de 6 h
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Installer Stockfish + zstd
+        run: sudo apt-get update -q && sudo apt-get install -y -q stockfish zstd
+
+      - name: Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Extraire un dataset plat en Elo (une seule passe, binning par Elo moyen)
+        run: |
+          ELO_LO=${{ github.event.inputs.elo_lo }}
+          ELO_HI=${{ github.event.inputs.elo_hi }}
+          BANDS=${{ github.event.inputs.bands }}
+          PER=${{ github.event.inputs.per_band }}
+          MAXGAP=${{ github.event.inputs.max_gap }}
+          MAXSCAN=${{ github.event.inputs.max_scan }}
+          MONTH=${{ github.event.inputs.month }}
+          # décalage aléatoire du départ : varie les parties des bandes communes
+          SKIP=$(( RANDOM % 5000 ))
+          WIDTH=$(( (ELO_HI - ELO_LO) / BANDS ))
+          echo "Plage [$ELO_LO, $ELO_HI] en $BANDS bandes de ~${WIDTH} Elo, $PER parties/bande."
+          echo "Écart max entre joueurs : $MAXGAP · scan max : $MAXSCAN · skip initial : $SKIP"
+
+          # Une seule passe : on décide de chaque partie au moment où la SUIVANTE
+          # commence (marqueur [Event). count[idx] = nb de parties déjà gardées
+          # dans la bande idx. On s'arrête quand toutes les bandes sont pleines
+          # OU quand on a examiné MAXSCAN parties (les extrémités sont rares).
+          curl -s "https://database.lichess.org/standard/lichess_db_standard_rated_${MONTH}.pgn.zst" \
+            | zstdcat 2>/dev/null \
+            | awk -v lo="$ELO_LO" -v hi="$ELO_HI" -v nb="$BANDS" -v per="$PER" \
+                  -v gap="$MAXGAP" -v skip="$SKIP" -v maxscan="$MAXSCAN" '
+                BEGIN { width = (hi - lo) / nb; full = 0; scanned = 0; kept = 0 }
+                /^\[Event / {
+                  if (buf != "") keep()
+                  if (full >= nb || scanned >= maxscan) exit
+                  buf = ""; w = 0; b = 0
+                }
+                /^\[WhiteElo "/ { v = $2; gsub(/[^0-9]/, "", v); w = v + 0 }
+                /^\[BlackElo "/ { v = $2; gsub(/[^0-9]/, "", v); b = v + 0 }
+                { buf = buf $0 "\n" }
+                END {
+                  if (buf != "" && full < nb && scanned < maxscan) keep()
+                  short = 0
+                  for (k = 0; k < nb; k++) if (count[k] < per) short++
+                  printf("Bandes pleines : %d/%d — parties gardees : %d — bandes incompletes : %d\n",
+                         full, nb, kept, short) > "/dev/stderr"
+                }
+                function keep(   avg, idx, d) {
+                  scanned++
+                  if (scanned <= skip) return          # décalage initial
+                  if (w <= 0 || b <= 0) return          # il faut les deux Elo
+                  d = (w > b) ? w - b : b - w
+                  if (gap + 0 > 0 && d > gap) return    # écart trop grand -> moyenne trompeuse
+                  avg = (w + b) / 2
+                  if (avg < lo || avg >= hi) return
+                  idx = int((avg - lo) / width)
+                  if (idx < 0 || idx >= nb) return
+                  if (count[idx] >= per) return          # bande déjà pleine
+                  printf "%s", buf                       # on garde cette partie
+                  count[idx]++; kept++
+                  if (count[idx] == per) full++
+                }
+              ' > slice.pgn || true
+          echo "Tranche extraite : $(grep -c "^\[Event " slice.pgn) parties, $(du -h slice.pgn | cut -f1)"
+
+      - name: Analyser (par tranches, commit après chaque tranche)
+        timeout-minutes: 330   # coupe AVANT le timeout du job -> l'étape suivante s'exécute
+        env:
+          STOCKFISH_PATH: /usr/games/stockfish
+        run: |
+          mkdir -p dataset chunks
+          git config user.name "lll-factory"
+          git config user.email "actions@github.com"
+          # découper slice.pgn en tranches de 150 parties
+          awk '/^\[Event / { g++ } { print > sprintf("chunks/c%04d.pgn", int((g-1)/150)) }' slice.pgn
+          i=0
+          for chunk in chunks/c*.pgn; do
+            i=$((i+1))
+            echo "=== Tranche $i : $chunk ==="
+            node factory/factory.mjs "$chunk" "dataset/part-${{ github.run_id }}-$i.jsonl" \
+              ${{ github.event.inputs.depth }} 99999
+            # commit immédiat : la tranche est EN SÉCURITÉ dans le repo
+            git add dataset/
+            git commit -m "dataset: tranche $i du run ${{ github.run_id }} (+$(wc -l < dataset/part-${{ github.run_id }}-$i.jsonl) ex.)" || true
+            git pull --rebase && git push || (sleep 5 && git pull --rebase && git push)
+          done
+
+      - name: Filet de sécurité — committer ce qui reste
+        if: always()   # s'exécute même après timeout/annulation de l'analyse
+        run: |
+          git config user.name "lll-factory"
+          git config user.email "actions@github.com"
+          git add dataset/ || true
+          git commit -m "dataset: sauvetage fin de run ${{ github.run_id }}" || echo "rien à sauver"
+          git pull --rebase && git push || true
